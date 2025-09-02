@@ -143,20 +143,33 @@ class FraudDetector:
     
     def _analyze_same_group_different_values(self, clean_df: pd.DataFrame, rule: Dict[str, Any],
                                            group_by_col: str, compare_col: str, rule_name: str) -> Dict[str, Any]:
-        """Analyze same group → different values logic."""
+        """
+        Analyze same group → different values logic.
+        
+        Example: Bank 1111 has multiple ICs (021, 031):
+        - Row 1: Bank 1111, IC 021 (flagged - part of violating group)
+        - Row 2: Bank 1111, IC 031 (flagged - part of violating group)
+        - Row 3: Bank 1111, IC 021 (flagged but deduplicated in results)
+        
+        All rows belonging to groups with multiple different values are flagged,
+        but results show only unique combinations.
+        """
         # Group by the specified column and analyze variations
         grouped = clean_df.groupby(group_by_col)[compare_col].agg(['nunique', 'unique']).reset_index()
         grouped.columns = [group_by_col, 'unique_count', 'unique_values']
         
-        # Find groups with violations (more than 1 unique value)
+        # Find groups with violations (more than 1 unique value in compare column)
         violations = grouped[grouped['unique_count'] > 1].copy()
         
         if len(violations) == 0:
             return self._empty_result(rule_name)
         
-        # Get all flagged rows
+        # Get ALL rows that belong to violating groups
         flagged_group_values = violations[group_by_col].tolist()
-        flagged_data = clean_df[clean_df[group_by_col].isin(flagged_group_values)].copy()
+        all_flagged_rows = clean_df[clean_df[group_by_col].isin(flagged_group_values)].copy()
+        
+        # For results display, show only unique combinations to avoid duplicates
+        flagged_data = all_flagged_rows.drop_duplicates(subset=[group_by_col, compare_col], keep='first')
         
         # Add violation details to flagged data
         flagged_data['violation_reason'] = f"Rule: {rule_name}"
@@ -185,7 +198,17 @@ class FraudDetector:
     
     def _analyze_different_group_same_values(self, clean_df: pd.DataFrame, rule: Dict[str, Any],
                                            group_by_col: str, compare_col: str, rule_name: str) -> Dict[str, Any]:
-        """Analyze different groups → same values logic."""
+        """
+        Analyze different groups → same values logic.
+        
+        Example: Bank 7676 is used by multiple ICs (111, 222):
+        - Row 1: IC 111, Bank 7676 (flagged - part of violating value)
+        - Row 2: IC 222, Bank 7676 (flagged - part of violating value)
+        - Row 3: IC 111, Bank 7676 (flagged but deduplicated in results)
+        
+        All rows belonging to values shared by multiple groups are flagged,
+        but results show only unique combinations.
+        """
         # Group by compare column and analyze which groups share the same value
         grouped = clean_df.groupby(compare_col)[group_by_col].agg(['nunique', 'unique']).reset_index()
         grouped.columns = [compare_col, 'unique_count', 'unique_groups']
@@ -196,9 +219,12 @@ class FraudDetector:
         if len(violations) == 0:
             return self._empty_result(rule_name)
         
-        # Get all flagged rows
+        # Get ALL rows that belong to violating compare values
         flagged_compare_values = violations[compare_col].tolist()
-        flagged_data = clean_df[clean_df[compare_col].isin(flagged_compare_values)].copy()
+        all_flagged_rows = clean_df[clean_df[compare_col].isin(flagged_compare_values)].copy()
+        
+        # For results display, show only unique combinations to avoid duplicates
+        flagged_data = all_flagged_rows.drop_duplicates(subset=[group_by_col, compare_col], keep='first')
         
         # Add violation details to flagged data
         flagged_data['violation_reason'] = f"Rule: {rule_name}"
@@ -294,7 +320,9 @@ class FraudDetector:
         if all_flagged_data:
             combined_flagged = pd.concat(all_flagged_data, ignore_index=True)
             # Remove duplicates (same row flagged by multiple rules)
-            combined_flagged = combined_flagged.drop_duplicates(subset=df.columns.tolist())
+            # Use all original columns except violation-related columns for duplicate detection
+            original_columns = [col for col in df.columns.tolist() if col in combined_flagged.columns]
+            combined_flagged = combined_flagged.drop_duplicates(subset=original_columns, keep='first')
         else:
             combined_flagged = pd.DataFrame()
         
